@@ -1,0 +1,7 @@
+.venv
+cache/
+__pycache__/
+*.egg-info/
+uv.lock
+.claude
+exp/analysis/*_turns.jsonl
