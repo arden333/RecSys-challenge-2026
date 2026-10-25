@@ -133,13 +133,14 @@ class CRS_BASELINE:
             "response": response,
         }
 
-    def batch_chat(self, batch_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def batch_chat(self, batch_data: List[Dict[str, Any]], retrieval_topk: int = 20) -> List[Dict[str, Any]]:
         """Run multiple CRS turns in batch: retrieve items and generate responses.
         Args:
             batch_data: List of dictionaries, each containing:
                 - user_query: The user's latest message or request.
                 - user_id: Optional user identifier for personalization.
                 - session_memory: List of chat history messages.
+            retrieval_topk: Number of tracks to retrieve per query.
         Returns:
             A list of dictionaries, each with keys:
                 - user_id: The user identifier (may be None).
@@ -167,10 +168,10 @@ class CRS_BASELINE:
 
         # Stage 1: Batch retrieval
         if hasattr(self.retrieval, 'batch_text_to_item_retrieval'):
-            batch_retrieval_items = self.retrieval.batch_text_to_item_retrieval(retrieval_inputs, topk=20)
+            batch_retrieval_items = self.retrieval.batch_text_to_item_retrieval(retrieval_inputs, topk=retrieval_topk)
         else:
             # Fallback to sequential retrieval if batch method not available
-            batch_retrieval_items = [self.retrieval.text_to_item_retrieval(inp, topk=20) for inp in retrieval_inputs]
+            batch_retrieval_items = [self.retrieval.text_to_item_retrieval(inp, topk=retrieval_topk) for inp in retrieval_inputs]
 
         recommend_items = [self.item_db.id_to_metadata(items[0]) for items in batch_retrieval_items]
 

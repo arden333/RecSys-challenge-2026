@@ -60,11 +60,12 @@ def main(args):
             - batch_size (int): Batch size for inference
             - response (str): Whether to generate text responses
             - max_sessions (int): Optional limit on development sessions
+            - top100_analysis (bool): Save additional top-100 retrieval results
             - save_path (str): Output directory (currently unused)
 
     Returns:
-        None. Full results go to evaluation-code/exp/inference/devset/custom_{tid}.json;
-        limited runs go to baseline-code/exp/custom_{tid}_{N}session.json.
+        None. Full results go to evaluation-code/exp/inference/devset/custom_{tid}[_top100].json;
+        limited runs go to baseline-code/exp/custom_{tid}_{N}session[_top100].json.
 
     Processing:
         - Loads model configuration from config/{tid}.yaml
@@ -76,6 +77,8 @@ def main(args):
     config = OmegaConf.load(code_dir / "config" / f"{args.tid}.yaml")
     if args.max_sessions is not None and args.max_sessions < 1:
         raise ValueError("max_sessions must be positive")
+    if args.top100_analysis and args.response != "off":
+        raise ValueError("top100_analysis requires response off")
     cache_dir = (code_dir / config.cache_dir).resolve()
     if args.response == "on":
         print("Removing cache directory for preventing memory issues...")
@@ -119,20 +122,32 @@ def main(args):
         batch = batch_data[i:i+args.batch_size]
         batch_metadata = metadata[i:i+args.batch_size]
         results = music_crs.batch_chat(batch)
+        top100_results = music_crs.batch_chat(batch, retrieval_topk=100) if args.top100_analysis else None
         for j, result in enumerate(results):
-            inference_results.append({
+            prediction = {
                 "session_id": batch_metadata[j]['session_id'],
                 "user_id": batch_metadata[j]['user_id'],
                 "turn_number": batch_metadata[j]['turn_number'],
-                "predicted_track_ids": result['retrieval_items'],
+                "predicted_track_ids": result['retrieval_items'][:20],
                 "predicted_response": result["response"]
-            })
+            }
+            if args.top100_analysis:
+                top20_ids = result['retrieval_items']
+                top100_ids = top100_results[j]['retrieval_items']
+                top20_set = set(top20_ids)
+                if len(top100_ids) != 100 or not top20_set.issubset(top100_ids):
+                    raise ValueError("The top-20 retrieval must be contained in the top-100 retrieval")
+                # Preserve the baseline top-20 order when BM25 ties change with k.
+                prediction["retrieved_top100_track_ids"] = top20_ids + [
+                    track_id for track_id in top100_ids if track_id not in top20_set
+                ]
+            inference_results.append(prediction)
     if args.max_sessions is None:
         inference_dir = code_dir.parent / "evaluation-code" / "exp" / "inference" / "devset"
-        output_name = f"custom_{args.tid}.json"
+        output_name = f"custom_{args.tid}{'_top100' if args.top100_analysis else ''}.json"
     else:
         inference_dir = code_dir / "exp"
-        output_name = f"custom_{args.tid}_{args.max_sessions}session.json"
+        output_name = f"custom_{args.tid}_{args.max_sessions}session{'_top100' if args.top100_analysis else ''}.json"
     inference_dir.mkdir(parents=True, exist_ok=True)
     with (inference_dir / output_name).open("w", encoding="utf-8") as f:
         json.dump(inference_results, f, ensure_ascii=False)
@@ -163,6 +178,11 @@ if __name__ == "__main__":
         "--max_sessions",
         type=int,
         help="Run only the first N development sessions."
+    )
+    parser.add_argument(
+        "--top100_analysis",
+        action="store_true",
+        help="Save top-100 retrieval IDs separately while keeping predicted_track_ids at 20."
     )
     parser.add_argument(
         "--save_path",
