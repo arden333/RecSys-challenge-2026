@@ -27,3 +27,9 @@ Retrieval-only run with response generation disabled.
 | --- | ---: |
 | nDCG@20 | 0.006286 |
 | Catalog diversity | 0.060674 |
+
+## Experiments
+
+| No. | Why | Hypothesis | Variable | Result | Interpretation | Findings |
+| --- | --- | --- | --- | --- | --- | --- |
+| 01 | 66.6% of targets miss BM25's top 100; name and date fields lack genre and mood terms. | Adding tags improves Hit@20 and Hit@100. | Add `tag_list` to each BM25 track document. | Hit@20: 22.01% → 26.40%; Hit@100: 33.41% → 43.05%; nDCG@20: 0.081525 → 0.097060; diversity: 0.379533 → 0.454229. | Candidate coverage improves, but some previous hits are lost; 4,556 turns still miss the top 100. | [Exp01 findings](evaluation-code/exp/analysis/exp01_bm25_tags_findings.md) |
