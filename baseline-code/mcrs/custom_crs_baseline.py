@@ -120,7 +120,11 @@ class CRS_BASELINE:
         if self.generate_response:
             system_prompt = self._get_system_prompt(user_id)
         # stage1. retrieval
-        retrieval_input = "\n".join([f"{conversation['role']}: {conversation['content']}" for conversation in self.session_memory])
+        retrieval_input = "\n".join(
+            f"user: {conversation['content']}"
+            for conversation in self.session_memory
+            if conversation['role'] == 'user'
+        )
         retrieval_items = self.retrieval.text_to_item_retrieval(retrieval_input, topk=20)
         recommend_item = self.item_db.id_to_metadata(retrieval_items[0])
         # stage2. response generation
@@ -162,7 +166,11 @@ class CRS_BASELINE:
 
             if self.generate_response:
                 sys_prompts.append(self._get_system_prompt(user_id))
-            retrieval_input = "\n".join([f"{conversation['role']}: {conversation['content']}" for conversation in session_memory])
+            retrieval_input = "\n".join(
+                f"user: {conversation['content']}"
+                for conversation in session_memory
+                if conversation['role'] == 'user'
+            )
             retrieval_inputs.append(retrieval_input)
             session_memories.append(session_memory)
 
