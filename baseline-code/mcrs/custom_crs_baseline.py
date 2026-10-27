@@ -40,6 +40,11 @@ class CRS_BASELINE:
         attn_implementation="eager",
         dtype=torch.bfloat16,
         generate_response=True,
+        retrieval_model_name: str | None = None,
+        retrieval_device: str = "cpu",
+        retrieval_max_length: int | None = None,
+        retrieval_batch_size: int = 4,
+        retrieval_query_instruction: str | None = None,
     ):
         """Initialize the CRS baseline components.
 
@@ -68,7 +73,13 @@ class CRS_BASELINE:
         self.attn_implementation = attn_implementation
         self.generate_response = generate_response
         self.lm = load_lm_module(self.lm_type, self.device, self.attn_implementation, self.dtype) if generate_response else None
-        self.retrieval = load_retrieval_module(self.retrieval_type, self.item_db_name, self.track_split_types, self.corpus_types, self.cache_dir)
+        self.retrieval = load_retrieval_module(
+            self.retrieval_type, self.item_db_name, self.track_split_types,
+            self.corpus_types, self.cache_dir,
+            model_name=retrieval_model_name, device=retrieval_device,
+            max_length=retrieval_max_length, batch_size=retrieval_batch_size,
+            query_instruction=retrieval_query_instruction,
+        )
         self.item_db = MusicCatalogDB(self.item_db_name, self.track_split_types, self.corpus_types)
         self.user_db = UserProfileDB(self.user_db_name, self.user_split_types) if generate_response else None
         self.prompts_dir = os.path.join(os.path.dirname(__file__), "system_prompts")
@@ -120,11 +131,7 @@ class CRS_BASELINE:
         if self.generate_response:
             system_prompt = self._get_system_prompt(user_id)
         # stage1. retrieval
-        retrieval_input = "\n".join(
-            f"user: {conversation['content']}"
-            for conversation in self.session_memory
-            if conversation['role'] == 'user'
-        )
+        retrieval_input = "\n".join([f"{conversation['role']}: {conversation['content']}" for conversation in self.session_memory])
         retrieval_items = self.retrieval.text_to_item_retrieval(retrieval_input, topk=20)
         recommend_item = self.item_db.id_to_metadata(retrieval_items[0])
         # stage2. response generation
@@ -166,11 +173,7 @@ class CRS_BASELINE:
 
             if self.generate_response:
                 sys_prompts.append(self._get_system_prompt(user_id))
-            retrieval_input = "\n".join(
-                f"user: {conversation['content']}"
-                for conversation in session_memory
-                if conversation['role'] == 'user'
-            )
+            retrieval_input = "\n".join([f"{conversation['role']}: {conversation['content']}" for conversation in session_memory])
             retrieval_inputs.append(retrieval_input)
             session_memories.append(session_memory)
 

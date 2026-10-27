@@ -7,6 +7,7 @@ import json
 import torch
 import argparse
 import shutil
+from contextlib import nullcontext
 from pathlib import Path
 from mcrs.custom_crs_baseline import CRS_BASELINE
 from datasets import load_dataset
@@ -50,6 +51,23 @@ def chat_history_parser(conversations, music_crs, target_turn_number):
     user_query = df_current_turn.iloc[0]['content']
     return chat_history, user_query
 
+
+def load_checkpoint(path, metadata):
+    predictions = []
+    if not path.exists():
+        return predictions
+    with path.open("r", encoding="utf-8") as checkpoint:
+        for line in checkpoint:
+            prediction = json.loads(line)
+            index = len(predictions)
+            if index >= len(metadata) or any(
+                prediction[key] != metadata[index][key]
+                for key in ("session_id", "user_id", "turn_number")
+            ):
+                raise ValueError(f"Checkpoint turn does not match input at row {index}")
+            predictions.append(prediction)
+    return predictions
+
 def main(args):
     """
     Run batch inference on TalkPlayData-2 test dataset.
@@ -79,6 +97,8 @@ def main(args):
         raise ValueError("max_sessions must be positive")
     if args.top100_analysis and args.response != "off":
         raise ValueError("top100_analysis requires response off")
+    if args.resume and args.max_sessions is not None:
+        raise ValueError("resume requires the complete development set")
     cache_dir = (code_dir / config.cache_dir).resolve()
     if args.response == "on":
         print("Removing cache directory for preventing memory issues...")
@@ -95,7 +115,12 @@ def main(args):
         device=config.device,
         attn_implementation=config.attn_implementation,
         dtype=torch.bfloat16,
-        generate_response=args.response == "on"
+        generate_response=args.response == "on",
+        retrieval_model_name=config.get("retrieval_model_name"),
+        retrieval_device=config.get("retrieval_device", "cpu"),
+        retrieval_max_length=config.get("retrieval_max_length"),
+        retrieval_batch_size=config.get("retrieval_batch_size", 4),
+        retrieval_query_instruction=config.get("retrieval_query_instruction"),
     )
     db = load_dataset(str((code_dir / config.test_dataset_name).resolve()), split="test")
     if args.max_sessions is not None:
@@ -117,31 +142,6 @@ def main(args):
                 'user_id': user_id,
                 'turn_number': target_turn_number
             })
-    inference_results = []
-    for i in tqdm(range(0, len(batch_data), args.batch_size), desc="Batch inference"):
-        batch = batch_data[i:i+args.batch_size]
-        batch_metadata = metadata[i:i+args.batch_size]
-        results = music_crs.batch_chat(batch)
-        top100_results = music_crs.batch_chat(batch, retrieval_topk=100) if args.top100_analysis else None
-        for j, result in enumerate(results):
-            prediction = {
-                "session_id": batch_metadata[j]['session_id'],
-                "user_id": batch_metadata[j]['user_id'],
-                "turn_number": batch_metadata[j]['turn_number'],
-                "predicted_track_ids": result['retrieval_items'][:20],
-                "predicted_response": result["response"]
-            }
-            if args.top100_analysis:
-                top20_ids = result['retrieval_items']
-                top100_ids = top100_results[j]['retrieval_items']
-                top20_set = set(top20_ids)
-                if len(top100_ids) != 100 or not top20_set.issubset(top100_ids):
-                    raise ValueError("The top-20 retrieval must be contained in the top-100 retrieval")
-                # Preserve the baseline top-20 order when BM25 ties change with k.
-                prediction["retrieved_top100_track_ids"] = top20_ids + [
-                    track_id for track_id in top100_ids if track_id not in top20_set
-                ]
-            inference_results.append(prediction)
     if args.max_sessions is None:
         inference_dir = code_dir.parent / "evaluation-code" / "exp" / "inference" / "devset"
         output_name = f"custom_{args.tid}{'_top100' if args.top100_analysis else ''}.json"
@@ -149,8 +149,47 @@ def main(args):
         inference_dir = code_dir / "exp"
         output_name = f"custom_{args.tid}_{args.max_sessions}session{'_top100' if args.top100_analysis else ''}.json"
     inference_dir.mkdir(parents=True, exist_ok=True)
-    with (inference_dir / output_name).open("w", encoding="utf-8") as f:
+    output_path = inference_dir / output_name
+    checkpoint_path = output_path.with_suffix(".checkpoint.jsonl")
+    inference_results = load_checkpoint(checkpoint_path, metadata) if args.resume else []
+    checkpoint_context = checkpoint_path.open("a", encoding="utf-8") if args.resume else nullcontext()
+    with checkpoint_context as checkpoint:
+        for i in tqdm(range(len(inference_results), len(batch_data), args.batch_size), desc="Batch inference"):
+            batch = batch_data[i:i+args.batch_size]
+            batch_metadata = metadata[i:i+args.batch_size]
+            if args.top100_analysis and config.retrieval_type in {"bge_m3", "qwen3"}:
+                top100_results = music_crs.batch_chat(batch, retrieval_topk=100)
+                results = top100_results
+            else:
+                results = music_crs.batch_chat(batch)
+                top100_results = music_crs.batch_chat(batch, retrieval_topk=100) if args.top100_analysis else None
+            for j, result in enumerate(results):
+                prediction = {
+                    "session_id": batch_metadata[j]['session_id'],
+                    "user_id": batch_metadata[j]['user_id'],
+                    "turn_number": batch_metadata[j]['turn_number'],
+                    "predicted_track_ids": result['retrieval_items'][:20],
+                    "predicted_response": result["response"]
+                }
+                if args.top100_analysis:
+                    top20_ids = result['retrieval_items'][:20]
+                    top100_ids = top100_results[j]['retrieval_items']
+                    top20_set = set(top20_ids)
+                    if len(top100_ids) != 100 or not top20_set.issubset(top100_ids):
+                        raise ValueError("The top-20 retrieval must be contained in the top-100 retrieval")
+                    # Preserve the baseline top-20 order when BM25 ties change with k.
+                    prediction["retrieved_top100_track_ids"] = top20_ids + [
+                        track_id for track_id in top100_ids if track_id not in top20_set
+                    ]
+                inference_results.append(prediction)
+                if checkpoint is not None:
+                    checkpoint.write(json.dumps(prediction, ensure_ascii=False) + "\n")
+            if checkpoint is not None:
+                checkpoint.flush()
+    with output_path.open("w", encoding="utf-8") as f:
         json.dump(inference_results, f, ensure_ascii=False)
+    if args.resume:
+        checkpoint_path.unlink()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -183,6 +222,11 @@ if __name__ == "__main__":
         "--top100_analysis",
         action="store_true",
         help="Save top-100 retrieval IDs separately while keeping predicted_track_ids at 20."
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Save a per-turn checkpoint and resume an interrupted full-set run."
     )
     parser.add_argument(
         "--save_path",

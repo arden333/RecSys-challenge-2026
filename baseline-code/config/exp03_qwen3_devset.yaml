@@ -1,0 +1,23 @@
+lm_type: "meta-llama/Llama-3.2-1B-Instruct"
+retrieval_type: "qwen3"
+retrieval_model_name: "Qwen/Qwen3-Embedding-0.6B"
+retrieval_device: "mps"
+retrieval_max_length: 4923
+retrieval_batch_size: 16
+retrieval_query_instruction: "Retrieve music tracks matching the user's current request and conversation context."
+test_dataset_name: "../data/Dataset"
+item_db_name: "../data/Track-Metadata"
+user_db_name: "../data/User-Metadata"
+track_split_types:
+  - "all_tracks"
+user_split_types:
+  - "all_users"
+corpus_types:
+  - "track_name"
+  - "artist_name"
+  - "album_name"
+  - "release_date"
+  - "tag_list"
+cache_dir: "./cache"
+device: "cpu"
+attn_implementation: "eager"
